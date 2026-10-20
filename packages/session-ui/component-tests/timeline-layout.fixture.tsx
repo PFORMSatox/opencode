@@ -2,6 +2,7 @@ import { For, batch, createMemo } from "solid-js"
 import { createStore } from "solid-js/store"
 import { render } from "solid-js/web"
 import { DialogProvider } from "@opencode/ui/context/dialog"
+import type { SessionMessageAssistantTool } from "@opencode/client/promise"
 import type { SessionDocument } from "../src/document"
 import { CurrentSessionProviders } from "../src/storybook/current-session-story"
 import { CURRENT_SESSION_ID, STORY_MODEL, STORY_TIME } from "../src/storybook/current-session-fixtures"
@@ -72,7 +73,7 @@ const documentFixture: SessionDocument = {
                   content: [{ type: "text" as const, text: "Source content." }],
                 },
                 time: { created: STORY_TIME, ran: STORY_TIME, completed: STORY_TIME + 1 },
-              },
+              } satisfies SessionMessageAssistantTool,
             ]
           : []),
         { type: "text" as const, text: replies[index]! },
@@ -145,7 +146,7 @@ export async function mountTimelineLayout(width: number) {
         setState("open", true)
         setState("document", "status", { type: "busy" })
         // Keep the earlier context collapsed; only the live Thinking row is expanded.
-        setState("document", "messages", 1, (message) =>
+        setState("document", "messages", 1, (message): SessionDocument["messages"][number] =>
           message.type === "assistant" ? { ...message, content: [{ type: "text", text: replies[0]! }] } : message,
         )
         setState("document", "messages", state.document.messages.length - 1, {
