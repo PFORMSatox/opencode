@@ -147,6 +147,7 @@ export function createTimelineVirtualizer(input: Input) {
   // Rows added after the first one already shown, at the end or among the last rows. While following, they grow in
   // instead of landing.
   const arrivals = new Set<string>()
+  const [leavingKeys, setLeavingKeys] = createSignal<string[]>([])
 
   let listedKeys = rowKeys()
 
@@ -528,7 +529,7 @@ export function createTimelineVirtualizer(input: Input) {
 
   // A row near the end leaves while the timeline follows it: the offset clamps to the shorter end and the rows above
   // would drop into its place in one frame. They start where they were and close the gap on the growth spring, while
-  // the row that left fades where it was.
+  // the original row stays mounted until its fade finishes.
   function closeRemoved(previous: string[], keys: string[]) {
     if (previous === keys) return
     const remaining = new Set(keys)
@@ -570,32 +571,24 @@ export function createTimelineVirtualizer(input: Input) {
     const anchor = above === undefined ? undefined : virtualizer.measurementsCache[rowKeys().lastIndexOf(above)]
 
     if (!wrapper?.isConnected || !virtualContent || !above || !anchor) return
-    // SAFETY: a deep clone has the same element type as its source.
-    const ghost = wrapper.cloneNode(true) as HTMLElement
-    const sources = [...wrapper.querySelectorAll("*")]
-    const copies = ghost.querySelectorAll<HTMLElement>("*")
-    wrapper.getAnimations({ subtree: true }).forEach((animation) => {
-      const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null
-      const copy = target ? copies[sources.indexOf(target)] : undefined
-
-      if (!target || !copy) return
-      copy.style.animation = "none"
-      copy.style.opacity = getComputedStyle(target).opacity
+    setLeavingKeys((keys) => [...keys, key])
+    wrapper.setAttribute("aria-hidden", "true")
+    wrapper.inert = true
+    wrapper.style.pointerEvents = "none"
+    wrapper.style.top = `${parseFloat(wrapper.style.top) - drop}px`
+    ghosts.set(wrapper, { key: above, top: anchor.start - topOffset() - shift().size - drop })
+    const fade = wrapper.animate([{ opacity: getComputedStyle(wrapper).opacity }, { opacity: 0 }], {
+      duration: 110,
+      easing: "cubic-bezier(.4,0,1,1)",
+      fill: "forwards",
     })
-    ghost.removeAttribute("data-timeline-key")
-    ghost.dataset.timelineLeaving = key
-    ghost.setAttribute("aria-hidden", "true")
-    ghost.inert = true
-    ghost.style.pointerEvents = "none"
-    ghost.style.top = `${parseFloat(wrapper.style.top) - drop}px`
-    virtualContent.append(ghost)
-    ghosts.set(ghost, { key: above, top: anchor.start - topOffset() - shift().size - drop })
-    ghost
-      .animate([{ opacity: 1 }, { opacity: 0 }], { duration: 110, easing: "cubic-bezier(.4,0,1,1)", fill: "forwards" })
-      .finished.finally(() => {
-        ghosts.delete(ghost)
-        ghost.remove()
-      })
+    void fade.finished.then(
+      () => {
+        ghosts.delete(wrapper)
+        setLeavingKeys((keys) => keys.filter((item) => item !== key))
+      },
+      () => undefined,
+    )
   }
 
   const moveGhosts = () =>
@@ -844,7 +837,9 @@ export function createTimelineVirtualizer(input: Input) {
     () => new Map(virtualizer.getVirtualItems().map((item) => [item.key, item] as const)),
   )
 
-  const virtualRowKeys = createMemo(() => virtualizer.getVirtualItems().map((item) => String(item.key)))
+  const virtualRowKeys = createMemo(() => [
+    ...new Set([...virtualizer.getVirtualItems().map((item) => String(item.key)), ...leavingKeys()]),
+  ])
 
   createEffect(() => {
     if (!active()) return
@@ -1190,10 +1185,12 @@ export function createTimelineVirtualizer(input: Input) {
       let element: HTMLDivElement
       const initialItem = virtualItemByKey().get(rowProps.rowKey)!
       const initialRow = rowByKey().get(rowProps.rowKey)!
-      const item = createMemo(() => virtualItemByKey().get(rowProps.rowKey) ?? initialItem)
-      const row = createMemo(() => rowByKey().get(rowProps.rowKey) ?? rows()[item().index] ?? initialRow)
+      const leaving = () => leavingKeys().includes(rowProps.rowKey)
+      const item = createMemo<VirtualItem>((previous) => virtualItemByKey().get(rowProps.rowKey) ?? previous, initialItem)
+      const row = createMemo<TimelineRow.TimelineRow>((previous) => rowByKey().get(rowProps.rowKey) ?? previous, initialRow)
 
-      const edges = createMemo(() => {
+      const edges = createMemo<{ top: number; bottom: number }>((previous) => {
+        if (leaving() && previous) return previous
         const top =
           item().start - topOffset() - rendering.scrollAdjustment - (item().index < shift().rows ? shift().size : 0)
 
@@ -1256,7 +1253,7 @@ export function createTimelineVirtualizer(input: Input) {
                 virtualizer.scrollToEnd()
               })
             }}
-            data-index={item().index}
+            data-index={leaving() ? -1 : item().index}
             style={{ "min-height": ready() ? undefined : `${initialItem.size}px` }}
           >
             {props.renderRow(row, () => {
