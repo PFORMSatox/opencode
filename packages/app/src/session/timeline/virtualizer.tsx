@@ -475,7 +475,11 @@ export function createTimelineVirtualizer(input: Input) {
 
   const commitSize = (index: number, key: string, size: number) => {
     const measured = virtualizer.itemSizeCache.get(key)
-    const shown = measured ?? (arrivals.delete(key) ? 0 : undefined)
+    const arriving = arrivals.has(key)
+    const shown = measured ?? (arriving ? 0 : undefined)
+
+    // A deferred row can report zero before its contents mount. Its first visible measurement still owns entrance.
+    if (size > 0) arrivals.delete(key)
 
     // Streamed markdown can lose a line for a moment as it settles (a closing fence, say). While it streams, a followed
     // row never shrinks below what it shows, and gives back what it lost once the text completes. A target that drops
@@ -492,6 +496,9 @@ export function createTimelineVirtualizer(input: Input) {
     if (measured === undefined) {
       resizeItem(index, 0)
       virtualizer.itemSizeCache.set(key, 0)
+    }
+
+    if (arriving) {
       const element = virtualizer.elementsCache.get(key)
 
       if (element && !textMessage(rows()[index])) enter(element, { duration: 200 })
