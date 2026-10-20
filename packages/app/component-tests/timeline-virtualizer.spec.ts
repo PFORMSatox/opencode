@@ -1,6 +1,36 @@
 import { expect, sourceURL, story } from "../../storybook/playwright/story"
+import { writeFile } from "node:fs/promises"
 
 const fixture = sourceURL(new URL("./timeline-virtualizer.fixture.tsx", import.meta.url))
+const pretextFixture = sourceURL(new URL("./timeline-pretext.fixture.tsx", import.meta.url))
+
+story("precomputes the full extent of 5000 rows before revealing or jumping", async ({ page }, testInfo) => {
+  await page.evaluate(async (url) => {
+    ;(await import(url)).mountLongTimeline()
+  }, pretextFixture)
+  const root = page.getByTestId("pretext-long-timeline")
+  await expect(root.locator("[data-timeline-virtual-content]")).toHaveCSS("visibility", "visible")
+  const initial = await page.evaluate(async (url) => (await import(url)).longTimelineReport(), pretextFixture)
+  await writeFile(testInfo.outputPath("long-initial.json"), JSON.stringify(initial, null, 2))
+  expect(initial.count).toBeGreaterThan(5000)
+  expect(initial.fallbacks).toBe(0)
+  expect(Math.abs(initial.extent - initial.expected)).toBeLessThanOrEqual(1)
+  expect(Math.abs(initial.offset - (initial.extent - initial.viewport))).toBeLessThanOrEqual(1)
+  expect(initial.mounted).toBeLessThan(30)
+  expect(initial.mismatches).toEqual([])
+  for (const index of [0, 900, 1799, 451]) {
+    const immediate = await page.evaluate(async ({ url, index }) => (await import(url)).jumpLongTimeline(index), {
+      url: pretextFixture,
+      index,
+    })
+    await expect(root.locator(`[data-timeline-key="user-message:long-user-${index}"]`)).toBeVisible()
+    const painted = await page.evaluate(async (url) => (await import(url)).longTimelineReport(), pretextFixture)
+    await writeFile(testInfo.outputPath(`jump-${index}.json`), JSON.stringify({ immediate, painted }, null, 2))
+    expect(Math.abs(painted.extent - initial.extent)).toBeLessThanOrEqual(1)
+    expect(Math.abs(painted.offset - immediate.offset)).toBeLessThanOrEqual(1)
+    expect(painted.mismatches).toEqual([])
+  }
+})
 
 story.beforeEach(async ({ mount }) => {
   const component = await mount("opencode-composer-flow--mixed-attachments")

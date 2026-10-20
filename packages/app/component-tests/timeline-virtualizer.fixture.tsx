@@ -38,6 +38,7 @@ export function mountTimelineVirtualizer(input: { count: number; rowHeight: numb
         messageLastRowIndex: () => indexes,
       },
       showHeader: () => false,
+      layout: () => ({ source: "dom", reason: "deferred fixture content" }),
       pinned: () => state.pinned,
       scroll: () => ({ overflow: false, jump: false }),
       setScrollRef: (element) => {
