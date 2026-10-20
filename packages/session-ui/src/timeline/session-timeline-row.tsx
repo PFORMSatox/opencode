@@ -10,6 +10,9 @@ import { For, Show, createEffect, createMemo, type Accessor, type JSX } from "so
 import { DiffChanges } from "@opencode/ui/diff-changes"
 import { Icon } from "@opencode/ui/icon"
 import { Dynamic } from "solid-js/web"
+import { createTimelineTextLayout, type TimelineLayoutEnvironment, type TimelineRowLayout } from "./text-layout"
+import { createTimelineMarkdownLayout } from "./markdown-layout"
+import { attached } from "../components/message-file"
 import type { SessionUserActions, SessionUserAttachmentReference, SessionUserComment } from "../actions"
 import { useData } from "../context"
 import { TimelineSeparator } from "../components/timeline-separator"
@@ -255,7 +258,9 @@ export function createSessionTimelineRowRenderer(input: {
             }
             reasoningOpen={(id) => input.disclosure.value(id)}
             onReasoningOpenChange={(id, open) => input.disclosure.set(id, open)}
-            toolDefaultOpen={(tool) => (input.timelineDetail || tool.name === "execute" ? contentDefaultOpen(tool) : false)}
+            toolDefaultOpen={(tool) =>
+              input.timelineDetail || tool.name === "execute" ? contentDefaultOpen(tool) : false
+            }
             toolOpen={(id) => input.disclosure.value(`${row().group.key}:tool:${id}`)}
             onToolOpenChange={(id, open) => input.disclosure.set(`${row().group.key}:tool:${id}`, open)}
             fileOpen={(path) =>
@@ -368,6 +373,18 @@ export function createSessionTimelineRowRenderer(input: {
       return item ? contentDefaultOpen(item) : undefined
     })
 
+    const prepared = createMemo(() => {
+      const value = content()
+      const assistant = message()
+      const reference = ref()
+      if ((value?.type !== "text" && value?.type !== "reasoning") || !assistant || !reference) return
+      return markdownLayout.prepare(
+        reference.partID,
+        value.text,
+        value.type === "text" && assistant.time.completed === undefined,
+      )
+    })
+
     const disclosureKey = () => (content()?.type === "reasoning" ? ref()!.partID : row().group.key)
 
     return (
@@ -385,6 +402,7 @@ export function createSessionTimelineRowRenderer(input: {
                 toolOpen={input.disclosure.value(disclosureKey()) ?? defaultOpen()}
                 onToolOpenChange={(open) => input.disclosure.set(disclosureKey(), open)}
                 onContentRendered={onSizeChange}
+                preparedMarkdown={prepared()}
               />
             )}
           </Show>
@@ -972,6 +990,7 @@ export function createSessionTimelineRowRenderer(input: {
                     }
                     onOpenChange={(open) => input.disclosure.set(current().ref.partID, open)}
                     onContentRendered={onSizeChange}
+                    preparedMarkdown={markdownLayout.prepare(current().ref.partID, content().text, true)}
                   />
                 )}
               </Show>
@@ -1052,7 +1071,113 @@ export function createSessionTimelineRowRenderer(input: {
     )
   }
 
-  return { Row }
+  const textLayout = createTimelineTextLayout()
+  const markdownLayout = createTimelineMarkdownLayout(textLayout)
+
+  function layout(row: TimelineRow.TimelineRow, environment: TimelineLayoutEnvironment): TimelineRowLayout {
+    if (row._tag === "TurnGap") return { source: "fixed", height: 24 }
+    if (row._tag === "Activity") return { source: "fixed", height: 0 }
+    const width =
+      (input.centered?.() && environment.desktop ? Math.min(744, environment.width) : environment.width) -
+      (environment.desktop ? 48 : 32)
+    if (row._tag === "Thinking") {
+      const open =
+        input.disclosure.value(row.ref.partID) ??
+        (input.timelineDetail
+          ? input.timelineDetail().thinking.details === "expanded"
+          : input.reasoningMode() === "full")
+      if (!open) return { source: "fixed", height: 40 }
+      const content = Timeline.resolveContent(input.projection.messageByID().get(row.ref.messageID), row.ref.partID)
+      if (content?.type === "reasoning") {
+        if (!content.text.trim()) return { source: "fixed", height: 40 }
+        const measured = markdownLayout.layout(
+          row.ref.partID,
+          content.text,
+          true,
+          width - 12,
+          environment.typography,
+          true,
+        )
+        return measured.source === "dom" ? measured : { source: "pretext", height: 44 + measured.height }
+      }
+    }
+    if (row._tag === "AssistantPart") {
+      const spacing = row.spacing === "tool" ? 8 : row.spacing === "content" ? 16 : 0
+      if (row.group.type === "context" && input.disclosure.value(`context:${row.group.key}`) !== true)
+        return { source: "fixed", height: spacing + 28 }
+      if (row.group.type === "read" && input.disclosure.value(row.group.key) !== true)
+        return { source: "fixed", height: spacing + 32 }
+      if (row.group.type === "part") {
+        const content = Timeline.resolveContent(
+          input.projection.messageByID().get(row.group.ref.messageID),
+          row.group.ref.partID,
+        )
+        if (content?.type === "reasoning") {
+          if (!content.text.trim() || !(input.disclosure.value(row.group.ref.partID) ?? contentDefaultOpen(content)))
+            return { source: "fixed", height: spacing + 28 }
+          const measured = markdownLayout.layout(
+            row.group.ref.partID,
+            content.text,
+            false,
+            width - 12,
+            environment.typography,
+            true,
+          )
+          return measured.source === "dom" ? measured : { source: "pretext", height: spacing + 32 + measured.height }
+        }
+      }
+    }
+    if (row._tag === "AssistantPart" && row.group.type === "part") {
+      const message = input.projection.messageByID().get(row.group.ref.messageID)
+      const content = Timeline.resolveContent(message, row.group.ref.partID)
+      if (message?.type === "assistant" && content?.type === "text") {
+        const measured = markdownLayout.layout(
+          row.group.ref.partID,
+          content.text,
+          message.time.completed === undefined,
+          width,
+          environment.typography,
+        )
+        if (measured.source === "dom") return measured
+        return {
+          source: "pretext",
+          height: !content.text
+            ? 0
+            : measured.height +
+              (row.spacing === "content" ? 16 : 24 + (row.spacing === "tool" ? 8 : 0)) +
+              (copyContentID(row.userMessageID) === row.group.ref.partID
+                ? 28 - Math.min(4, measured.trailingMargin)
+                : 0),
+        }
+      }
+    }
+    if (row._tag !== "UserMessage") return { source: "dom", reason: row._tag }
+    const message = input.projection.messageByID().get(row.userMessageID)
+    if (message?.type !== "user") return { source: "fixed", height: 0 }
+    const presentation = input.presentation?.(message)
+    if (
+      message.files?.some((file) => file.mention || (attached(file) && !file.mime.startsWith("image/"))) ||
+      message.agents?.length ||
+      presentation?.comments?.length ||
+      presentation?.references?.length
+    )
+      return { source: "dom", reason: "user attachments or references" }
+    const text = presentation?.displayText ?? message.text
+    if (!text) return { source: "dom", reason: "empty user message" }
+    const contentWidth = Math.min(width * 0.82, 64 * textLayout.ch(environment.typography)) - 24
+    const images = message.files?.filter(attached).length ?? 0
+    const imageRows = Math.ceil(images / Math.max(1, Math.floor((contentWidth + 24 + 8) / (58 + 8))))
+    return {
+      source: "pretext",
+      height:
+        (imageRows ? imageRows * (46 + 8) : presentation?.voice ? 8 : 0) +
+        16 +
+        28 +
+        textLayout.text(TimelineRow.key(row), text, contentWidth, environment.typography, "pre-wrap"),
+    }
+  }
+
+  return { Row, layout }
 }
 
 function capitalizeAgent(agent: string) {

@@ -11,6 +11,7 @@ import {
 } from "../tools/tool-renderer"
 import { currentToolError, currentToolInput, currentToolMetadata, currentToolOutput } from "./current-tool-state"
 import { currentStreamingInput } from "./streaming-input"
+import type { PreparedMarkdown } from "../components/markdown-prepared"
 // Registers the genui_render renderer with the tool registry.
 import "../genui/tool"
 
@@ -57,6 +58,7 @@ export function SessionAssistantContent(props: {
   toolOpen?: boolean
   onToolOpenChange?: (open: boolean) => void
   onContentRendered?: () => void
+  preparedMarkdown?: PreparedMarkdown
 }) {
   return (
     <Switch>
@@ -68,6 +70,7 @@ export function SessionAssistantContent(props: {
             message={props.message}
             showCopy={props.showAssistantCopyPartID === props.contentID}
             turnDurationMs={props.turnDurationMs}
+            preparedMarkdown={props.preparedMarkdown}
           />
         )}
       </Match>
@@ -81,6 +84,7 @@ export function SessionAssistantContent(props: {
             open={props.toolOpen}
             onOpenChange={props.onToolOpenChange}
             onContentRendered={props.onContentRendered}
+            preparedMarkdown={props.preparedMarkdown}
           />
         )}
       </Match>

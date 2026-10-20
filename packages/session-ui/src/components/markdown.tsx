@@ -3,6 +3,7 @@ import { checksum } from "@opencode/util/encode"
 import {
   type ComponentProps,
   createEffect,
+  createMemo,
   createResource,
   createSignal,
   createUniqueId,
@@ -35,6 +36,7 @@ import {
   type MarkdownCacheEntry,
 } from "./markdown-cache"
 import { inlineCodeKind } from "./markdown-inline-code-kind"
+import type { PreparedMarkdown, PreparedMarkdownBlock } from "./markdown-prepared"
 import { renderMermaidSvg } from "./markdown-mermaid"
 import { createMarkdownRenderer } from "./markdown-solid"
 import {
@@ -572,11 +574,20 @@ export function Markdown(
     cacheKey?: string
     streaming?: boolean
     deferUntilReady?: boolean
+    prepared?: PreparedMarkdown
     class?: string
     classList?: Record<string, boolean>
   },
 ) {
-  const [local, others] = splitProps(props, ["text", "cacheKey", "streaming", "deferUntilReady", "class", "classList"])
+  const [local, others] = splitProps(props, [
+    "text",
+    "cacheKey",
+    "streaming",
+    "deferUntilReady",
+    "prepared",
+    "class",
+    "classList",
+  ])
   const i18n = useI18n()
   const markdown = useMarkdown()
   const previewImages = createImagePreview()
@@ -589,9 +600,60 @@ export function Markdown(
   let renderedBlocks: RenderedBlock[] = []
   let streamed = false
 
+  const painted = new WeakMap<PreparedMarkdownBlock, RenderedBlock>()
+  const highlighting = new WeakMap<PreparedMarkdownBlock, ReturnType<typeof code>>()
+  const [highlights] = createResource(
+    () => local.prepared?.blocks,
+    async (blocks) =>
+      Promise.all(
+        blocks.flatMap((block, index) => {
+          if (block.mode !== "code") return []
+          const pending =
+            highlighting.get(block) ?? code(block.source, block.language, `${owner}:prepared:${index}`, block.complete)
+          highlighting.set(block, pending)
+          return [pending.then((result) => ({ block, result }))]
+        }),
+      ),
+    { initialValue: [] },
+  )
+  const preparedResult = createMemo((): RenderResult | undefined => {
+    const prepared = local.prepared
+    if (!prepared || prepared.text !== local.text) return
+    const loaded = highlights.state === "ready" || highlights.state === "refreshing"
+    const colors = new Map((loaded ? highlights.latest : []).map((entry) => [entry.block, entry.result]))
+    return {
+      text: prepared.text,
+      ready: true,
+      blocks: prepared.blocks.map((block, index): RenderedBlock => {
+        const key = `${owner}:prepared:${index}`
+        if (block.mode !== "code") {
+          const previous = painted.get(block)
+          if (previous) return previous
+          const result = { ...block, key }
+          painted.set(block, result)
+          return result
+        }
+        const result = colors.get(block)
+        const plain: MarkdownToken[] = [[block.source, ""]]
+        return {
+          key,
+          mode: "code",
+          raw: block.raw,
+          hash: String(block.raw.length),
+          language: block.language,
+          complete: block.complete,
+          generation: result?.generation ?? -1,
+          stable: result?.stable ?? [],
+          unstable: result?.unstable ?? plain,
+        }
+      }),
+    }
+  })
+
   const [projection] = createResource(
     () => {
       if (isServer) return
+      if (local.prepared) return
       const live = local.streaming ?? false
 
       if (live) streamed = true
@@ -625,6 +687,7 @@ export function Markdown(
 
   const [html] = createResource(
     () => {
+      if (local.prepared) return
       if (isServer)
         return {
           text: local.text,
@@ -756,9 +819,11 @@ export function Markdown(
 
   createEffect(() => {
     const container = root()
-    const result = html.latest ?? html()
-    const projected = currentProjection()
-    const content = local.text ? pendingBlocks(result, projected, local.cacheKey, owner, local.deferUntilReady) : []
+    const prepared = preparedResult()
+    const result = prepared ?? html.latest ?? html()
+    const content =
+      prepared?.blocks ??
+      (local.text ? pendingBlocks(result, currentProjection(), local.cacheKey, owner, local.deferUntilReady) : [])
 
     if (!container) return
 

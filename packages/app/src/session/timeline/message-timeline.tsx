@@ -194,6 +194,8 @@ function MessageTimelineView(
     presentationKey: () => JSON.stringify(props.data.timelineDetail()),
     projection,
     showHeader,
+    layout: (row, environment) =>
+      row._tag === "Activity" ? { source: "fixed", height: 36 } : rowRenderer.layout(row, environment),
     pinned,
     scroll: () => props.scroll,
     onResumeScroll: props.onResumeScroll,
