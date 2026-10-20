@@ -323,7 +323,7 @@ export function createTimelineVirtualizer(input: Input) {
     initialMeasurementsCache: initialMeasurements,
     // A row arriving at a followed end grows in from nothing, so it never paints first at the estimate.
     estimateSize: (index) =>
-      modelHeight(getItemKey()(index)) ?? (arrivals.has(getItemKey()(index)) && following() ? 0 : fallbackItemSize),
+      arrivals.has(getItemKey()(index)) && following() ? 0 : (modelHeight(getItemKey()(index)) ?? fallbackItemSize),
     // A newly observed element gets a real ResizeObserver box before paint. Reuse
     // its snapshot on attachment, but later explicit measurements must read layout
     // so deferred/rewrapped content cannot keep stale, clipped heights (TanStack/virtual#1183).
@@ -1392,16 +1392,8 @@ export function createTimelineVirtualizer(input: Input) {
                 virtualizer.scrollToEnd()
               })
             }}
-<<<<<<< HEAD
             data-index={leaving() ? -1 : item().index}
-            style={{ "min-height": ready() ? undefined : `${initialItem.size}px` }}
-||||||| parent of ba5527bd24 (feat(app): measure timeline rows with pretext)
-            data-index={item().index}
-            style={{ "min-height": ready() ? undefined : `${initialItem.size}px` }}
-=======
-            data-index={item().index}
             style={{ "min-height": ready() || modeled() ? undefined : `${initialItem.size}px` }}
->>>>>>> ba5527bd24 (feat(app): measure timeline rows with pretext)
           >
             {props.renderRow(row, () => {
               setReady(true)
