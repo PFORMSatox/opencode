@@ -885,7 +885,14 @@ export function createTimelineVirtualizer(input: Input) {
       if (!active() || !root?.isConnected) return
 
       // Already following its end (sending a prompt resumes it): rows growing in keep growing.
-      if (behavior !== "smooth" && following() && !rendering.anchor && !rendering.scrollAdjustment) return
+      if (
+        behavior !== "smooth" &&
+        following() &&
+        !rendering.anchor &&
+        !rendering.scrollAdjustment &&
+        root.scrollHeight - root.clientHeight - root.scrollTop <= 1
+      )
+        return
       prepareNavigation()
       input.onPin()
 
