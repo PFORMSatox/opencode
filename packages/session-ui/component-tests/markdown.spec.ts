@@ -546,7 +546,7 @@ story("renders the trailing chunk while the stream is paused", async ({ page }) 
 story("keeps live elements and selection when a stream completes and later changes", async ({ page }) => {
   await page.evaluate(async (fixture) => {
     const { mountMarkdown } = await import(fixture)
-    await mountMarkdown({ text: "Hello **world**", streaming: true })
+    await mountMarkdown({ text: "Hello **world**", streaming: true, cached: true })
   }, fixture)
   const harness = page.getByTestId("markdown-fixture")
   const markdown = harness.locator('[data-component="markdown"]')
@@ -555,6 +555,10 @@ story("keeps live elements and selection when a stream completes and later chang
   await paragraph.evaluate((element) => element.setAttribute("data-retained", "true"))
   await harness.getByLabel("Markdown text").fill("Hello **world** again")
   await expect(markdown.locator("[data-markdown-word]")).toHaveCount(3)
+  await markdown
+    .locator("[data-markdown-word]")
+    .last()
+    .evaluate((element) => element.setAttribute("data-retained", "true"))
   await expect(paragraph).toHaveAttribute("data-retained", "true")
   await expect(markdown.locator("[data-markdown-enter]")).not.toHaveCount(0)
   await paragraph.evaluate((element) => {
@@ -571,6 +575,7 @@ story("keeps live elements and selection when a stream completes and later chang
   await expect(markdown).toHaveAttribute("data-markdown-ready", "")
   await expect(paragraph).toHaveAttribute("data-retained", "true")
   expect(await page.evaluate(() => window.getSelection()?.toString())).toBe("world")
+  await expect(markdown.locator('[data-markdown-word][data-retained="true"]')).toHaveText("again")
   await harness.getByLabel("Markdown text").fill("Changed **content**")
   await expect(paragraph).toHaveText("Changed content")
   await expect(paragraph).toHaveAttribute("data-retained", "true")

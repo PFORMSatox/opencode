@@ -969,7 +969,12 @@ function updateBlock(
   markExternalLinkFavicons(source)
 
   if (rendered) {
-    rendered.renderer.update(source.innerHTML, block.mode === "live", rendered.raw !== block.raw)
+    // Completion may decorate the same text; keep its words and their in-flight fades until the text actually changes.
+    rendered.renderer.update(
+      source.innerHTML,
+      block.mode === "live" || rendered.raw === block.raw,
+      rendered.raw !== block.raw,
+    )
     rendered.raw = block.raw
 
     return
