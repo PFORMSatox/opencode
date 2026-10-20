@@ -3,13 +3,11 @@ import { growthSpring } from "./row-growth"
 
 type Rect = { x: number; y: number; w: number; h: number }
 
-type Flight = { text: HTMLElement; from: Rect; expire: ReturnType<typeof setTimeout> }
+type Flight = { text: HTMLElement; layer: HTMLElement; from: Rect; expire: ReturnType<typeof setTimeout> }
 
-// Like iOS: the sent text lifts out of the composer and becomes its bubble in the timeline. Both are copies drawn above
-// the composer; the real composer clears and the real bubble stays hidden until the flight lands on it.
+// The sent text rises from behind the composer, clipped to its timeline's visible viewport. The real bubble stays
+// hidden until the flight lands on it.
 const waiting = new Map<string, Flight>()
-
-let layer: HTMLDivElement | undefined
 
 /** Holds a copy of the composer's text where it is, before the composer clears, for the bubble that `id` becomes. */
 export function prepareSendFlight(id: string, editor: HTMLElement | undefined) {
@@ -38,24 +36,26 @@ export function prepareSendFlight(id: string, editor: HTMLElement | undefined) {
   editor.childNodes.forEach((node) => text.append(node.cloneNode(true)))
   text.querySelectorAll("[contenteditable]").forEach((node) => node.removeAttribute("contenteditable"))
 
-  if (!layer?.isConnected) {
-    layer = document.createElement("div")
-    layer.setAttribute("aria-hidden", "true")
-    layer.dataset.sendFlight = ""
-    Object.assign(layer.style, {
-      position: "fixed",
-      inset: "0",
-      pointerEvents: "none",
-      zIndex: "1000",
-      contain: "strict",
-    })
-    document.body.append(layer)
-  }
+  const layer = document.createElement("div")
+  layer.setAttribute("aria-hidden", "true")
+  layer.dataset.sendFlight = ""
+  Object.assign(layer.style, {
+    position: "absolute",
+    inset: "0",
+    pointerEvents: "none",
+    zIndex: "1",
+    contain: "strict",
+    overflow: "hidden",
+    // The destination supplies its viewport before the copy may paint.
+    visibility: "hidden",
+  })
+  document.body.append(layer)
 
   layer.append(text)
-  waiting.get(id)?.text.remove()
+  waiting.get(id)?.layer.remove()
   waiting.set(id, {
     text,
+    layer,
     from: { x: box.left, y: box.top, w: box.width, h: box.height },
     expire: setTimeout(() => {
       waiting.delete(id)
@@ -65,7 +65,7 @@ export function prepareSendFlight(id: string, editor: HTMLElement | undefined) {
           easing: "cubic-bezier(.4,0,1,1)",
           fill: "forwards",
         })
-        .finished.finally(() => text.remove())
+        .finished.finally(() => layer.remove())
     }, 700),
   })
 }
@@ -79,12 +79,22 @@ export function landSendFlight(id: string, bubble: HTMLElement) {
   clearTimeout(flight.expire)
 
   if (prefersReducedMotion()) {
-    flight.text.remove()
+    flight.layer.remove()
 
     return false
   }
 
   const style = getComputedStyle(bubble)
+  const viewport = bubble
+    .closest('[data-slot="session-timeline-scroll"]')
+    ?.parentElement?.querySelector<HTMLElement>('[data-slot="session-timeline-visible"]')
+
+  if (!viewport) {
+    flight.layer.remove()
+
+    return false
+  }
+  viewport.append(flight.layer)
   const left = parseFloat(style.paddingLeft) || 0
   const right = parseFloat(style.paddingRight) || 0
   const top = parseFloat(style.paddingTop) || 0
@@ -112,30 +122,32 @@ export function landSendFlight(id: string, bubble: HTMLElement) {
   const spring = Spring.fromDuration(0, growthSpring()).set(1)
   let last: DOMRect | undefined
   let rect = bubble.getBoundingClientRect()
+  let clip = viewport.getBoundingClientRect()
 
   const land = () => {
     bubble.style.removeProperty("opacity")
-    host.remove()
-    flight.text.remove()
+    flight.layer.remove()
   }
 
   frameLoop.addMeasured(
     () => {
       last = rect
       rect = bubble.getBoundingClientRect()
+      clip = viewport.getBoundingClientRect()
     },
     (dt) => {
-      if (!bubble.isConnected || rect.width < 1) {
+      if (!bubble.isConnected || !viewport.isConnected || rect.width < 1) {
         land()
 
         return false
       }
 
       const p = spring.step(dt)
+      flight.layer.style.visibility = "visible"
       const at = mix(start, { x: rect.left, y: rect.top, w: rect.width, h: rect.height }, p)
       host.style.width = `${rect.width}px`
       host.style.height = `${rect.height}px`
-      host.style.transform = `translate3d(${at.x}px, ${at.y}px, 0) scale(${at.w / rect.width}, ${at.h / rect.height})`
+      host.style.transform = `translate3d(${at.x - clip.left}px, ${at.y - clip.top}px, 0) scale(${at.w / rect.width}, ${at.h / rect.height})`
       host.style.opacity = `${Math.min(1, p / 0.5)}`
 
       const words = mix(
@@ -144,7 +156,7 @@ export function landSendFlight(id: string, bubble: HTMLElement) {
         p,
       )
 
-      flight.text.style.transform = `translate3d(${words.x}px, ${words.y}px, 0)`
+      flight.text.style.transform = `translate3d(${words.x - clip.left}px, ${words.y - clip.top}px, 0)`
       flight.text.style.opacity = `${Math.max(0, 1 - p / 0.4)}`
 
       if (!spring.resting || !last || Math.abs(last.top - rect.top) > 0.5 || Math.abs(last.left - rect.left) > 0.5)
