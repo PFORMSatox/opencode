@@ -2048,6 +2048,79 @@ test("serializes concurrent MCP lifecycle operations", async () => {
   )
 })
 
+testEffect(
+  AppNodeBuilder.build(
+    LayerNode.group([
+      Config.node,
+      ManagedPolicy.node,
+      Bus.node,
+      Integration.node,
+      Credential.node,
+      Form.node,
+      Environment.node,
+      Location.node,
+    ]),
+    [
+      Location.node.replace(
+        Layer.succeed(
+          Location.Service,
+          Location.Service.of(location({ directory: AbsolutePath.make(import.meta.dir) })),
+        ),
+      ),
+      Environment.node.replace(hostEnvironmentLayer),
+    ],
+  ),
+).live(
+  "revives a local stdio MCP server killed by an external process",
+  () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      const pidFile = path.join(tmp.path, "server.pid")
+      const root = yield* Scope.make()
+      yield* Effect.addFinalizer(() => State.shutdown(Scope.close(root, Exit.void)))
+      const context = yield* Layer.buildWithScope(Mcp.layer(), root)
+      const service = Context.get(context, Mcp.Service)
+
+      yield* service
+        .transform((editor) =>
+          editor.set(
+            "recovery",
+            new ConfigMCP.Local({
+              type: "local",
+              command: [process.execPath, path.join(import.meta.dir, "fixture/mcp-holder.ts"), pidFile],
+            }),
+          ),
+        )
+        .pipe(Scope.provide(root))
+      yield* service.reload()
+
+      const initial = yield* settled(service, "recovery").pipe(Effect.timeout("15 seconds"))
+      expect(initial?.status).toBe("connected")
+      const killed = Number(yield* Effect.tryPromise(() => fs.readFile(pidFile, "utf8")))
+      yield* Effect.try(() => process.kill(killed, "SIGKILL"))
+
+      // The close must be observed first: wait for the status to leave "connected" so the revival
+      // phase below cannot settle on the pre-kill connection. A "pending" status means the close
+      // was noticed and a reconnect is already in flight, so only a still-"connected" status
+      // keeps this phase waiting.
+      yield* Effect.gen(function* () {
+        const status = (yield* service.servers()).find((server) => server.name === "recovery")?.status
+        if (status?.status === "connected") return yield* Effect.fail(undefined)
+      }).pipe(Effect.retry({ schedule: Schedule.spaced("10 millis") }), Effect.timeout("25 seconds"))
+
+      // The registry must reconnect to a fresh process; the revived pid is what proves a
+      // reconnection, not a zombie connection reporting itself alive.
+      yield* Effect.gen(function* () {
+        const status = (yield* service.servers()).find((server) => server.name === "recovery")?.status
+        if (status?.status !== "connected") return yield* Effect.fail(undefined)
+      }).pipe(Effect.retry({ schedule: Schedule.spaced("100 millis") }), Effect.timeout("25 seconds"))
+      const revived = Number(yield* Effect.tryPromise(() => fs.readFile(pidFile, "utf8")))
+      expect(revived).not.toBe(killed)
+      expect((yield* service.tools()).filter((tool) => tool.server === "recovery")).toHaveLength(1)
+    }),
+  60_000,
+)
+
 testEffect(Layer.empty).live("preserves plugin transforms through MCP catalog updates", () =>
   Effect.gen(function* () {
     const tool = (server: string, name: string, description = name) =>

@@ -6,7 +6,21 @@ import { ephemeral } from "@opencode/schema/event"
 import type { Session } from "@opencode/schema/session"
 import { createHash } from "node:crypto"
 import { isDeepStrictEqual } from "node:util"
-import { Cause, Context, Effect, Exit, FiberSet, Latch, Layer, Schema, Scope, Semaphore, Stream, Types } from "effect"
+import {
+  Cause,
+  Context,
+  Duration,
+  Effect,
+  Exit,
+  FiberSet,
+  Latch,
+  Layer,
+  Schema,
+  Scope,
+  Semaphore,
+  Stream,
+  Types,
+} from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Credential } from "../credential.js"
 import { Bus } from "../bus.js"
@@ -86,6 +100,8 @@ type ServerEntry = {
   // Set when a remote server is registered as an OAuth integration; the credential lives in the global store.
   integrationID?: Integration.ID
   registration?: State.Registration
+  // Set when the server is disposed (removed or replaced) so post-close recovery can opt out.
+  disposed?: boolean
 }
 
 // MCP elicitations are Location-scoped, not Session-scoped: the server cannot attribute them to a
@@ -401,15 +417,37 @@ export const layer = (options?: Options) =>
 
       const watch = (name: ServerName, entry: ServerEntry, connection: McpClient.Connection) => {
         const live = whenLive(name, entry, connection)
-        connection.onClose((reason) =>
+        connection.onClose((reason) => {
           live(
             Effect.gen(function* () {
-              entry.status = { status: "failed", error: reason }
+              if (entry.status.status !== "disabled" && entry.status.status !== "needs_auth")
+                entry.status = { status: "failed", error: reason }
               yield* stopServer(name, entry)
               yield* bus.publish(McpEvent.StatusChanged, { server: name })
             }),
-          ),
-        )
+          )
+          // A local stdio server that crashed or was killed externally used to stay dead: nothing
+          // supervises it after close, so the status remains "failed" and every later tool call
+          // reports "Reconnect it from /mcps" until a human intervenes. Retry a few times with
+          // backoff. The re-check under the lifecycle lock yields to intentional disconnects
+          // (disabled), replacements (entry swapped), and any connection acquired in the meantime.
+          if (entry.config.type !== "local" || entry.disposed) return
+          fork(
+            Effect.gen(function* () {
+              for (let attempt = 1; attempt <= 5; attempt++) {
+                yield* Effect.gen(function* () {
+                  if (entry.disposed || entries.get(name) !== entry) return
+                  if (entry.client !== undefined) return
+                  if (entry.status.status === "disabled" || entry.status.status === "needs_auth") return
+                  yield* Effect.logInfo("mcp auto-reconnecting local server", { server: name, attempt })
+                  yield* startServer(name, entry)
+                }).pipe(locks.withLock(name))
+                if (entry.client !== undefined || entry.disposed) return
+                yield* Effect.sleep(Duration.millis(1_000 * attempt))
+              }
+            }).pipe(Effect.ignore),
+          )
+        })
         // Background refreshes (list-changed) can observe the expiry too; they do not retry, so
         // reconnect here for them. Foreground calls reconnect through `recovering`.
         connection.onSessionExpired(() => fork(recover(name, entry, connection)))
@@ -494,6 +532,7 @@ export const layer = (options?: Options) =>
       })
 
       const disposeServer = Effect.fnUntraced(function* (name: ServerName, entry: ServerEntry) {
+        entry.disposed = true
         yield* stopServer(name, entry)
         if (entry.integrationID) owned.delete(entry.integrationID)
         if (entry.registration) yield* entry.registration.dispose
