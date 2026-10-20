@@ -243,9 +243,17 @@ export function createTimelineVirtualizer(input: Input) {
       }
 
       return observeElementRect(instance, (rect) => {
+        const resized = rootRect !== undefined && (rootRect.width !== rect.width || rootRect.height !== rect.height)
         rootRect = rect
 
-        if (active()) reportRect?.(rect)
+        if (!active()) return
+        reportRect?.(rect)
+        // A viewport resize changes the DOM gap without changing the reader's intent. Restore the followed end
+        // before the next growth frame tests that gap; otherwise a smaller viewport strands every later append.
+        if (resized && input.pinned())
+          queueMicrotask(() => {
+            if (active() && input.pinned()) pinEnd()
+          })
       })
     },
     // Route navigation detaches and reattaches the scroll element, which drops its offset.
@@ -353,8 +361,7 @@ export function createTimelineVirtualizer(input: Input) {
 
   const resizeItem = virtualizer.resizeItem
 
-  // Read at the start of each growth frame, before its writes: only a timeline resting on its end keeps it.
-  let endBefore = false
+  // Read before the frame's writes. Follow intent survives layout changes that temporarily enlarge the DOM gap.
   let viewport = 0
   // Space held under the last row so the end eases onto the composer instead of stopping there.
   let lift = 0
@@ -370,7 +377,6 @@ export function createTimelineVirtualizer(input: Input) {
   const growth = createRowGrowth({
     measure: () => {
       const root = listRoot()
-      endBefore = !!root && root.scrollHeight - root.clientHeight - root.scrollTop <= 1
       viewport = root?.clientHeight ?? 0
     },
     resize: (key, size) => {
@@ -414,7 +420,7 @@ export function createTimelineVirtualizer(input: Input) {
 
     holdSpace(grid(lift))
 
-    if (root && endBefore && input.pinned()) pinEnd(viewport)
+    if (root && input.pinned()) pinEnd(viewport)
   }
 
   function pinEnd(viewport?: number) {
@@ -682,6 +688,7 @@ export function createTimelineVirtualizer(input: Input) {
       if (coldPending) return
 
       if (!input.pinned()) return
+      if (following()) return pinEnd()
       const root = listRoot()
 
       // Reopening a settled scroll-to-end operation can fight subsequent keyboard scrolling.
